@@ -5,3 +5,4 @@ __pycache__/
 logs/*.log
 screenshots/*.png
 output/*.csv
+chrome_user_data/

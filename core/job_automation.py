@@ -1,7 +1,6 @@
-import urllib.parse
 from datetime import datetime
 from typing import List, Dict, Any
-from playwright.sync_api import Page
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from config import Config
 from utils.logger import logger
 
@@ -16,90 +15,70 @@ class JobAutomation:
         logger.info(f"Screenshot captured: {filepath.name}")
         return str(filepath)
 
-    def _handle_cloudflare_if_present(self):
-        """Waits for security verification check to resolve if triggered."""
-        cf_detected = (
-            "verification" in self.page.title().lower()
-            or self.page.locator("text=Performing security verification").count() > 0
-            or self.page.locator("#challenge-running").count() > 0
-        )
-        if cf_detected:
-            logger.info("Cloudflare challenge detected. Waiting 7 seconds for verification...")
-            self.page.wait_for_timeout(7000)
-
     def navigate_and_search(self, keyword: str):
-        encoded_keyword = urllib.parse.quote_plus(keyword)
-        target_url = f"{Config.BASE_URL}/remote-jobs/search?term={encoded_keyword}"
-        
-        logger.info(f"Navigating to target: {target_url}")
+        logger.info(f"Navigating to job portal: {Config.BASE_URL}")
         try:
-            self.page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
-            self._handle_cloudflare_if_present()
-            self.page.wait_for_load_state("networkidle")
-            self.take_screenshot("search_page_loaded")
-        except Exception as e:
-            logger.warning(f"Initial load notice: {e}. Checking security challenge state...")
-            self._handle_cloudflare_if_present()
+            self.page.goto(Config.BASE_URL, wait_until="domcontentloaded", timeout=20000)
+            self.take_screenshot("portal_loaded")
+
+
+            logger.info(f"Interacting with search input (query: '{keyword}')...")
+            search_input = self.page.locator("#id-searchfield, input[name='q'], input[type='search']").first
+            search_input.wait_for(state="visible", timeout=10000)
+            
+            search_input.click()
+            search_input.fill("")
+            search_input.type(keyword, delay=80)
+            
+            self.take_screenshot("form_interaction_completed")
+            logger.info("Search form populated and verified.")
+
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Navigation or form interaction timed out: {e}")
+            self.take_screenshot("error_timeout")
+            raise
 
     def extract_jobs(self, limit: int) -> List[Dict[str, Any]]:
-        logger.info(f"Extracting up to {limit} listings...")
+        logger.info(f"Extracting up to {limit} active job postings...")
         results = []
 
         try:
-            job_links = self.page.locator("a[href*='/remote-jobs/']")
-            total_links = job_links.count()
-            logger.info(f"Detected {total_links} job anchors on page.")
+            job_items = self.page.locator("ol.list-recent-jobs li")
+            total_items = job_items.count()
+            count = min(total_items, limit)
+            logger.info(f"Detected {total_items} jobs on the board. Parsing top {count}...")
 
-            seen_urls = set()
-            idx = 0
+            for i in range(count):
+                item = job_items.nth(i)
 
-            while len(results) < limit and idx < total_links:
-                link = job_links.nth(idx)
-                idx += 1
+                link_elem = item.locator("span.listing-company-name a, h2 a").first
+                title = link_elem.text_content().strip() if link_elem.count() > 0 else "N/A"
+                href = link_elem.get_attribute("href") if link_elem.count() > 0 else ""
+                full_url = f"https://www.python.org{href}" if href.startswith("/") else href
 
-                href = link.get_attribute("href") or ""
-                if not href or href in seen_urls or href.endswith(("/remote-jobs", "/remote-jobs/")):
-                    continue
+                category_elem = item.locator("span.listing-company-category a, span.listing-company-category").first
+                category = category_elem.text_content().strip() if category_elem.count() > 0 else "Developer / Engineer"
 
-                full_url = href if href.startswith("http") else f"{Config.BASE_URL}{href}"
-                seen_urls.add(href)
+                location_elem = item.locator("span.listing-location a, span.listing-location").first
+                location = location_elem.text_content().strip() if location_elem.count() > 0 else "Remote"
 
-                card = link.locator("xpath=./ancestor::li[1]")
-                container = card if card.count() > 0 else link
+                job_type_elem = item.locator("span.listing-job-type a, span.listing-job-type").first
+                job_type = job_type_elem.text_content().strip() if job_type_elem.count() > 0 else "Full Time"
 
-                title = "N/A"
-                for sel in ["span.title", "h3", ".title"]:
-                    el = container.locator(sel).first
-                    if el.count() > 0 and el.is_visible():
-                        title = el.text_content().strip()
-                        break
-
-                company = "N/A"
-                for sel in ["span.company", ".company"]:
-                    el = container.locator(sel).first
-                    if el.count() > 0 and el.is_visible():
-                        company = el.text_content().strip()
-                        break
-
-                region = "N/A"
-                for sel in ["span.region", ".region"]:
-                    el = container.locator(sel).first
-                    if el.count() > 0 and el.is_visible():
-                        region = el.text_content().strip()
-                        break
+                company_display = f"{category} ({job_type})"
 
                 results.append({
                     "title": title,
-                    "company": company,
-                    "location": region,
+                    "company": company_display,
+                    "location": location,
                     "url": full_url
                 })
+                logger.info(f"[{i + 1}] {title} | {company_display} | {location}")
 
-            logger.info(f"Extracted {len(results)} valid job records.")
             self.take_screenshot("extraction_completed")
             return results
 
         except Exception as e:
-            logger.error(f"Error during job extraction: {e}")
+            logger.error(f"Data extraction failed: {e}")
             self.take_screenshot("error_extraction")
             raise

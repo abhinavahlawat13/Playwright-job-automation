@@ -12,19 +12,16 @@ def main():
         with BrowserManager.get_page() as page:
             bot = JobAutomation(page)
             
-            # portal navigation
-            bot.navigate_to_jobs()
             
-            # search keyword
-            bot.search_keyword(Config.SEARCH_KEYWORD)
+            bot.navigate_and_search(Config.SEARCH_KEYWORD)
             
-            # extract job list
+            
             jobs = bot.extract_jobs(limit=Config.MAX_RESULTS)
             
-            # results
+            
             if jobs:
                 export_jobs_to_csv(jobs)
-                logger.info(f"=== Successfully finished! Extracted {len(jobs)} jobs. ===")
+                logger.info(f"=== Pipeline Finished! Extracted {len(jobs)} jobs. ===")
             else:
                 logger.warning("No listings found matching the keyword.")
 
